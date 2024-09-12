@@ -24,49 +24,69 @@ void log_m(const char* __restrict__ format, ...) {
 // https://picsum.photos/200/300
 // https://web.mit.edu/files/images/202409/240626-WSP-MIT-Eisinger_Portrait-0313-SL.jpg
 
-int main(int argc, char const* argv[])
+int main(int argc, const char* argv[])
 {
-    struct addrinfo hints, *res;
+    const char *domain = "web.mit.edu";
+    const char *path = "/files/images/202409/240626-WSP-MIT-Eisinger_Portrait-0313-SL.jpg";
+    if (argc == 3) {
+        domain = argv[1];
+        path = argv[2];
+    } 
+    struct addrinfo hints, *address;
 
     memset(&hints, 0, sizeof(hints));
 
     hints.ai_family = AF_UNSPEC;
     hints.ai_socktype = SOCK_STREAM;
     int result;
-    getaddrinfo("picsum.photos", "80", &hints, &res);
+    result = getaddrinfo(domain, "80", &hints, &address);
+    if (result != 0) {
+        log_m("Failed to getaddrinfo");
+        exit(EXIT_FAILURE);
+    }
 
-    int sockfd = socket(res->ai_family,res->ai_socktype,res->ai_protocol);
+    int sockfd = socket(address->ai_family,address->ai_socktype,address->ai_protocol);
+    if (sockfd == -1) {
+        log_m("Failed to get socket");
+        exit(EXIT_FAILURE);
+    }
 
-    log_m("Connecting...");
 
-    connect(sockfd, res->ai_addr, res->ai_addrlen);
-    
-    log_m("Connected!!!");
+    result = connect(sockfd, address->ai_addr, address->ai_addrlen);
+    if (result != 0) {
+        log_m("Failed to connect");
+        exit(EXIT_FAILURE);
+    }
 
-    char *header = "GET /files/images/202409/240626-WSP-MIT-Eisinger_Portrait-0313-SL.jpg HTTP/1.1\nHOST: web.mit.edu\n\n";
+    char header[1024];
+    snprintf(header, sizeof(header), "GET %s HTTP/1.1\nHOST: %s\n\n",
+        path, domain);
 
-    send(sockfd,header,strlen(header),0);
+    result = send(sockfd,header,strlen(header),0);
+    if (result == -1 ) {
+        log_m("Failed to send");
+        exit(EXIT_FAILURE);
+    }
 
-    log_m("GET sent...");
     char response_buf[4096];
     int byte_count = recv(sockfd, response_buf, sizeof(response_buf) - 1, 0);
+    if (byte_count == -1) {
+        log_m("Failed to recv response");
+        exit(EXIT_FAILURE);
+    }
 
     response_buf[byte_count] = '\0';
 
-    // char *header_end = strstr(response_buf, "\n") + 2;
     char *header_end = strstr(response_buf, "\r\n\r\n") + 4;
 
-    // log_m("%d - (%p - %p)", byte_count, header_end, response_buf);
-
     size_t data_size = byte_count - (header_end - response_buf);
-    
-    // log_m("%zu", data_size);
-
-    // log_m("%s", response_buf);
 
     int http_status = 0;
     int scan_res = sscanf(response_buf, "HTTP/1.1 %d ", &http_status);
-    log_m("HTTP RESPONSE CODE: %d", http_status);
+    if (scan_res < 1){
+        log_m("Could not find HTTP code");
+        exit(EXIT_FAILURE);
+    }
 
     if (http_status != 200) {
         log_m("HTTP ERROR: %d", http_status);
@@ -74,6 +94,10 @@ int main(int argc, char const* argv[])
     }
 
     char *header_ptr = strstr(response_buf, "\r\n") + 2;
+    if (!header_ptr){
+        log_m("Could not find header_ptr");
+        exit(EXIT_FAILURE);
+    }
 
     char key[15];
     // char str_value[64];
@@ -83,23 +107,25 @@ int main(int argc, char const* argv[])
     
     int content_length = 0;
     bool found = false;
-    while(header_ptr < header_end - 5 && !found) {
+    while (header_ptr < header_end - 5 && !found) {
         scan_res = sscanf(header_ptr, "%14s: %d\r\n", key, &int_value);
-        if(scan_res == 2) {
-            if(strcmp(key, search_key) == 0) {
+        if (scan_res == 2) {
+            if (strcmp(key, search_key) == 0) {
                 content_length = int_value;
                 found = true;
             }
         }
         header_ptr = strstr(header_ptr, "\r\n") + 2;
+        if (!header_ptr){
+            log_m("Could not find header_ptr");
+            exit(EXIT_FAILURE);
+        }
     }
 
     if (!content_length){
         log_m("Could not get content length");
         exit(EXIT_FAILURE);
     }
-
-    log_m("Content-length: %d", content_length);
 
     char *body_buf = malloc(content_length);
     size_t remaining_length = content_length;
@@ -108,22 +134,36 @@ int main(int argc, char const* argv[])
 
     char *bodyputr = body_buf + data_size;
     while (remaining_length > 0) {
-        log_m("remaining length: %d", remaining_length);
         byte_count = recv(sockfd, bodyputr, remaining_length, 0);
+        if (byte_count == -1) {
+            free(body_buf);
+            log_m("Error: Did not recv response.");
+            exit(EXIT_FAILURE);
+        }
+
         remaining_length -= byte_count;
         bodyputr += byte_count;
     }
 
-    // IplImage *im = cvDecodeImage(body_buf, CV_LOAD_IMAGE_COLOR);
-
     FILE *fptr = fopen("test.jpg", "wb");
+    if (!fptr) {
+        free(body_buf);
+        log_m("Failed to open the ");
+        exit(EXIT_FAILURE);
+    }
     
-    fwrite(body_buf, 1, sizeof(body_buf), fptr);
+
+    byte_count = fwrite(body_buf, 1, content_length, fptr);
+    if (byte_count < content_length) {
+        free(body_buf);
+        log_m("Failed to write entire file");
+        exit(EXIT_FAILURE);
+    }
 
     fclose(fptr);
     free(body_buf);
 
     log_m("Successfully saved image to test.jpg");
 
-    exit(EXIT_SUCCESS);
+    return EXIT_SUCCESS;
 }
